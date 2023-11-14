@@ -15,48 +15,51 @@
 #' simpls_B <- simpls(nutrimouse$genotype, nutrimouse$lipid, cov(nutrimouse$genotype))$coefficients;
 #' fitted <- pred_y(nutrimouse$genotype, nutrimouse$lipid, simpls_B);
 #' @export
-simpls <- function(X, Y, dd){
-  n <- nrow(X) # number of observations
+##### SIMPLS Code #####
+simpls <- function(X,Y,dd){
+  n <- nrow(X) # sample size
   p <- ncol(X) # number of predictor variables
   resp <- ncol(Y) # number of response variables
-  Y0 <- Y-colMeans(Y) # center Y
-  if(n > p) { # set the number of principle components
+  Y0 <- Y-rep(colMeans(Y), each=n) # center Y
+  if(n > p) {
     a <- p
   } else {
     a <- n-1
   }
-  coeffs <- array(rep(0, p*resp*a),c(p,resp,a))
+  coeffs <- array(rep(0, p*resp*a),c(p,resp,a)) # coefficients for number of PC
+  
   cov_dd <- dd
   S_ww <- t(X)%*%X
-  S_wy <- t(X)%*%Y0 
-  S <- (S_ww - cov_dd)%*%ginv(S_ww)%*%S_wy
+  S_wy <- t(X)%*%Y0
   
   W <- X
   Omega.u <- ginv(cov_dd)
   tol <- 0.001
   M.iter <- 1000
-  for(iter in 1:M.iter){
+  for(iter in 1:M.iter){ 
     if(iter==1){
-      Omega.x <- ginv(S_ww/n) 
+      Omega.x <- ginv(S_ww/n)
     }else{
       Omega.x <- ginv(prev.Sigma.x)
     }
-    Omega.x <- (Omega.x+t(Omega.x))/2
-    Lambda <- (Omega.x + Omega.u)
-    inv.Lambda <- ginv(Lambda) 
-    X <- matrix(NA, n, p)
-    for(i in 1:n) {
-      w.vec <- matrix(W[i,],p,1)
-      m.x <- inv.Lambda%*%Omega.u%*%W[i,]
-      X[i,] <- rmvnorm(1,m.x,inv.Lambda,checkSymmetry=T) 
-    }
-    ### M-Step ###
-    Sigma.x <- inv.Lambda 
+    Omega.x <- (Omega.x+t(Omega.x))/2 # ensure Omega.x is symmetric
+    Lambda <- (Omega.x + Omega.u) 
+    inv.Lambda <- solve(Lambda) 
+    
     for(i in 1:n){
       w.vec <- matrix(W[i,],p,1)
       tmp.eval1 <- inv.Lambda%*%Omega.u%*%w.vec
-      tmp.eval2 <- (1/n)*tmp.eval1%*%t(tmp.eval1)
-      Sigma.x <- Sigma.x + tmp.eval2
+      tmp.eval2 <- tmp.eval1%*%t(tmp.eval1)
+      
+      if(i==1){
+        B.mat <- tmp.eval2
+      }else{
+        B.mat <- B.mat + tmp.eval2
+      }
+      
+      if(i==n){
+        Sigma.x <- (inv.Lambda + B.mat/n)
+      }
     }
     
     if((iter > 1) && (max(abs(prev.Sigma.x - Sigma.x)) < tol)){
@@ -64,9 +67,11 @@ simpls <- function(X, Y, dd){
     } else{
       prev.Sigma.x <- Sigma.x
     }
-  }
+  }  
   
-  D_w <- diag(sqrt(pmax(0,eigen(S_ww)$values)),p,p) 
+  ### M-Step ###
+  
+  D_w <- diag(sqrt(pmax(0,eigen(S_ww)$values)),p,p)
   diag(D_w)[-c(which(diag(D_w) > 10^(-3)))]=0
   Q_w <- eigen(S_ww)$vector
   S_wh <- Q_w%*%D_w%*%t(Q_w)
@@ -80,12 +85,14 @@ simpls <- function(X, Y, dd){
   diag(inv.D_x)[which(diag(Re(D_x))>10^(-3))] <- 1/diag(D_x)[which(diag(Re(D_x))>10^(-3))]
   inv.S_wh <- Q_w%*%inv.D_w%*%t(Q_w)
   inv.S_xh <- Q_x%*%inv.D_x%*%t(Q_x)
-  X <- W%*%inv.S_wh%*%S_xh 
+  X <- W%*%inv.S_wh%*%S_xh  # calibration of X
   Y0 <- W%*%inv.S_wh%*%inv.S_xh%*%S_wy
+  
+  S <- t(X)%*%Y0
   
   for (f in 1:a) {
     eigen <- eigen(t(S)%*%S)
-    comp <- which.max(eigen$values) 
+    comp <- which.max(eigen$values) # find the index of the largest eigenvalue in the vector of values
     q <- eigen$vectors[,comp] # Y factor weights
     r <- S%*%q # X factor weights
     tt <- X%*%r # X factor scores
@@ -102,7 +109,7 @@ simpls <- function(X, Y, dd){
       u <- u - TT%*%(t(TT)%*%u)
     }
     v <- v/norm(v,type='2') # normalize orthogonal loadings
-    S <- S - v%*%(t(v)%*%S) # 120 x 21
+    S <- S - v%*%(t(v)%*%S)
     if (f == 1) { #if first iteration, create new vectors
       R <- r
       TT <- tt
@@ -119,7 +126,7 @@ simpls <- function(X, Y, dd){
       V <- cbind(V,v)
     }
     #find coefficients
-    B <- Re(R%*%t(Q)) # regression coefficients # 120 x 21
+    B <- R%*%t(Q) # regression coefficients
     coeffs[,,f] <- B
   }
   h <- diag(TT%*%t(TT)) + length(X) # leverages
@@ -138,7 +145,7 @@ simpls <- function(X, Y, dd){
               P=P, 
               R=R,
               V=V,
-              fitted.values=Y));
+              fitted.values=Y))
 }
 
 #' Find Predicted Fitted Values
@@ -176,3 +183,28 @@ pred_y <- function(testX,testY,coeffs){
   
   return(Y);
 }
+
+#' Get Root Mean Squared Error of Matrix
+#' 
+#' Generate RMSEs for a given true and estimated matrix or vector
+#' @param est.val The matrix or vector of estimated values
+#' @param true.val The matrix or vector of true values
+#' @return The RMSE value
+#' @export
+mse <- function(est.val, true.val) {
+  
+  if(class(est.val)[1]!="numeric") {
+    
+    p <- ncol(est.val)
+    Y.mat <- matrix(rep(true.val,p),ncol=p,byrow=F)
+    
+    MSE <- sqrt(apply((est.val - Y.mat)^2,2,mean))
+    
+  } else {
+    
+    diff <- est.val - true.val
+    MSE <- sqrt(mean(diff^2))
+    
+  }
+  return(MSE)
+} 
